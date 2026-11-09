@@ -1,0 +1,108 @@
+name: Terraform CI/CD (IaC locale Docker)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch: # lancement manuel depuis l'onglet Actions
+
+permissions:
+  contents: read
+
+env:
+  TF_IN_AUTOMATION: "true" # sortie adaptée à la CI
+  TF_INPUT: "false"        # jamais de question interactive
+
+jobs:
+  # ==========================================================
+  # JOB 1 : Setup -> Init -> Validate -> Plan
+  # ==========================================================
+  plan:
+    name: Setup, Init, Plan
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout du code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+          terraform_wrapper: false
+
+      - name: Terraform fmt (style)
+        run: terraform fmt -check -recursive
+
+      - name: Terraform init
+        run: terraform init
+
+      - name: Terraform validate
+        run: terraform validate
+
+      - name: Terraform plan
+        run: terraform plan -out=tfplan
+
+      # Le plan est transmis au job Apply : on applique EXACTEMENT ce qui a été revu
+      - name: Sauvegarde du plan
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan
+          path: tfplan
+          retention-days: 1
+
+  # ==========================================================
+  # JOB 2 : Apply + Vérification
+  # S'exécute uniquement si le job "plan" a réussi (needs)
+  # et uniquement pour un push sur main (pas pour une PR).
+  # ==========================================================
+  apply:
+    name: Apply et vérification
+    needs: plan
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout du code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+          terraform_wrapper: false
+
+      - name: Terraform init
+        run: terraform init
+
+      - name: Récupération du plan
+        uses: actions/download-artifact@v4
+        with:
+          name: tfplan
+
+      - name: Terraform apply
+        run: terraform apply -auto-approve tfplan
+
+      - name: Outputs et conteneurs
+        run: |
+          terraform output
+          docker ps --format "table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}"
+
+      - name: Vérification de l'application web
+        run: |
+          URL=$(terraform output -raw app_access_url)
+          for i in $(seq 1 10); do
+            if curl -fsS "$URL" | grep -q "Application Deployed via Terraform IaC!"; then
+              echo "OK : application accessible sur $URL"
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "ERREUR : application inaccessible" && exit 1
+
+      - name: Vérification de la base (connexion avec le mot de passe déployé)
+        run: |
+          export PGPASSWORD="$(terraform output -raw db_password)"
+          psql "$(terraform output -raw db_connection)" \
+               -c "SELECT current_user, current_database(), now();"
