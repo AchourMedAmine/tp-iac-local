@@ -15,7 +15,7 @@ variable "db_user" {
 variable "db_password" {
   description = "Mot de passe PostgreSQL (valeur de TP : en production, utiliser un secret)."
   type        = string
-  default     = "strongpassword123"
+  default     = "NewPassword"
   sensitive   = true # masqué dans la sortie de plan/apply
 }
 
